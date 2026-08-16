@@ -246,10 +246,52 @@ $result = $client->lookup('TEST123', 'VIC');
 
 ## WordPress / WooCommerce
 
-```php
-// In your theme's functions.php or a custom plugin:
-require_once __DIR__ . '/vendor/autoload.php';
+### 1. Install Composer on your server
 
+Most managed WordPress hosts don't include Composer. If `composer` isn't available, install it:
+
+```bash
+cd /path/to/your/wordpress
+curl -sS https://getcomposer.org/installer | php
+```
+
+This creates `composer.phar` in your WordPress root. You only need to do this once.
+
+### 2. Install the SDK
+
+From your WordPress root directory (where `wp-config.php` lives):
+
+```bash
+composer require plateapi/plateapi-php
+```
+
+Or if Composer isn't in your PATH:
+
+```bash
+php composer.phar require plateapi/plateapi-php
+```
+
+This creates a `vendor/` directory with the SDK and its autoloader. If you already have a `composer.json` (some plugins use one), the SDK is added to it. If not, one is created automatically.
+
+**Important:** Make sure `vendor/` is not publicly accessible. Most WordPress installs already block it, but check that your `.htaccess` or server config doesn't serve files from `vendor/`.
+
+### 3. Load the autoloader
+
+Add this line near the top of your theme's `functions.php`, or in a custom plugin file:
+
+```php
+require_once ABSPATH . 'vendor/autoload.php';
+```
+
+If you installed Composer inside your theme directory instead, use:
+
+```php
+require_once get_stylesheet_directory() . '/vendor/autoload.php';
+```
+
+### 4. Use the SDK
+
+```php
 use PlateAPI\Client;
 
 function plateapi_lookup(string $plate, string $state): ?array {
@@ -263,6 +305,108 @@ function plateapi_lookup(string $plate, string $state): ?array {
     }
 }
 ```
+
+### 5. Example: shortcode for plate lookup
+
+Add this to `functions.php` to create a `[plateapi]` shortcode:
+
+```php
+use PlateAPI\Client;
+
+add_shortcode('plateapi', function ($atts) {
+    $atts = shortcode_atts(['plate' => '', 'state' => 'VIC'], $atts);
+    if (empty($atts['plate'])) {
+        return '<p>No plate provided.</p>';
+    }
+
+    $client = new Client('pk_live_your_api_key');
+    try {
+        $result = $client->lookup($atts['plate'], $atts['state']);
+    } catch (\Exception $e) {
+        return '<p>Lookup unavailable.</p>';
+    }
+
+    if (!$result['success']) {
+        return '<p>No vehicle found.</p>';
+    }
+
+    $v = $result['vehicle'];
+    return sprintf(
+        '<p><strong>%s %s</strong> (%s)</p>',
+        esc_html($v['make'] ?? ''),
+        esc_html($v['model'] ?? ''),
+        esc_html($v['year_range'] ?? '')
+    );
+});
+```
+
+Usage in any post or page: `[plateapi plate="ABC123" state="VIC"]`
+
+### 6. Example: AJAX endpoint for live lookup
+
+```php
+use PlateAPI\Client;
+
+add_action('wp_ajax_plateapi_lookup', 'handle_plateapi_lookup');
+add_action('wp_ajax_nopriv_plateapi_lookup', 'handle_plateapi_lookup');
+
+function handle_plateapi_lookup() {
+    check_ajax_referer('plateapi_nonce', 'nonce');
+
+    $plate = sanitize_text_field($_POST['plate'] ?? '');
+    $state = sanitize_text_field($_POST['state'] ?? 'VIC');
+
+    if (empty($plate)) {
+        wp_send_json_error('No plate provided');
+    }
+
+    $client = new Client('pk_live_your_api_key');
+    try {
+        $result = $client->lookup($plate, $state);
+        wp_send_json_success($result);
+    } catch (\Exception $e) {
+        wp_send_json_error($e->getMessage());
+    }
+}
+```
+
+Call it from JavaScript:
+
+```js
+const form = new FormData();
+form.append('action', 'plateapi_lookup');
+form.append('nonce', plateapi_vars.nonce); // localized via wp_localize_script
+form.append('plate', 'ABC123');
+form.append('state', 'VIC');
+
+fetch(plateapi_vars.ajax_url, { method: 'POST', body: form })
+    .then(r => r.json())
+    .then(data => console.log(data));
+```
+
+### Tips
+
+- **Don't hardcode your API key.** Store it in `wp-config.php` as a constant (`define('PLATEAPI_KEY', 'pk_live_...')`) and reference it with `new Client(PLATEAPI_KEY)`.
+- **Cache results.** Use WordPress transients to avoid repeated lookups for the same plate:
+
+```php
+function plateapi_cached_lookup(string $plate, string $state): ?array {
+    $key = 'plateapi_' . md5($plate . $state);
+    $cached = get_transient($key);
+    if ($cached !== false) {
+        return $cached;
+    }
+
+    $vehicle = plateapi_lookup($plate, $state);
+    if ($vehicle !== null) {
+        set_transient($key, $vehicle, DAY_IN_SECONDS);
+    }
+    return $vehicle;
+}
+```
+
+- **PHP version.** This SDK requires PHP 8.1+. Most modern WordPress hosts run 8.1 or 8.2. Check yours with `phpinfo()` or ask your host.
+- **Shared hosting.** If you can't run Composer, download the repo as a ZIP from GitHub, extract it, and `require_once` the individual files from `src/` manually (no autoloader needed -- just include `Client.php` and the exception files).
 
 ## Links
 
