@@ -4,11 +4,7 @@ PHP client for [PlateAPI](https://plateapi.com.au) -- Australian vehicle registr
 
 ## Install
 
-```bash
-composer require plateapi/plateapi-php
-```
-
-Or add to your `composer.json` from GitHub:
+Add the GitHub repository to your `composer.json`:
 
 ```json
 {
@@ -19,6 +15,12 @@ Or add to your `composer.json` from GitHub:
         "plateapi/plateapi-php": "dev-main"
     }
 }
+```
+
+Then run:
+
+```bash
+composer install
 ```
 
 Requires PHP 8.1+ and the cURL extension.
@@ -259,19 +261,32 @@ This creates `composer.phar` in your WordPress root. You only need to do this on
 
 ### 2. Install the SDK
 
-From your WordPress root directory (where `wp-config.php` lives):
+From your WordPress root directory (where `wp-config.php` lives), create or edit `composer.json`:
+
+```json
+{
+    "repositories": [
+        {"type": "vcs", "url": "https://github.com/PlateAPI/plateapi-php"}
+    ],
+    "require": {
+        "plateapi/plateapi-php": "dev-main"
+    }
+}
+```
+
+Then run:
 
 ```bash
-composer require plateapi/plateapi-php
+composer install
 ```
 
 Or if Composer isn't in your PATH:
 
 ```bash
-php composer.phar require plateapi/plateapi-php
+php composer.phar install
 ```
 
-This creates a `vendor/` directory with the SDK and its autoloader. If you already have a `composer.json` (some plugins use one), the SDK is added to it. If not, one is created automatically.
+This creates a `vendor/` directory with the SDK and its autoloader.
 
 **Important:** Make sure `vendor/` is not publicly accessible. Most WordPress installs already block it, but check that your `.htaccess` or server config doesn't serve files from `vendor/`.
 
