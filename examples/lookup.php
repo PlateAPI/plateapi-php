@@ -4,6 +4,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 use PlateAPI\Client;
 use PlateAPI\AuthenticationException;
+use PlateAPI\PlateAPIException;
 use PlateAPI\QuotaExceededException;
 use PlateAPI\RateLimitException;
 use PlateAPI\ServerException;
@@ -23,15 +24,22 @@ try {
         echo "Year range: {$v['year_range']}\n";
         echo "Body: " . ($v['body'] ?? '') . "\n";
         echo "Engine: " . ($v['engine'] ?? '') . "\n";
+        echo "Vehicle ID: " . ($v['vehicle_id'] ?? 'none') . "\n";
+        echo "Match: {$result['match']}\n";
         echo "Duration: {$result['duration_ms']}ms\n";
         echo "Request ID: {$result['request_id']}\n";
+
+        if ($v['vehicle_id'] !== null) {
+            $record = $client->vehicleById($v['vehicle_id']);
+            echo "Record: {$record['make']} {$record['model']} {$record['year_range']} ({$record['detail']})\n";
+        }
     }
 
     if ($result['rate_limit']['remaining'] !== null) {
         echo "Lookups remaining: {$result['rate_limit']['remaining']}\n";
     }
 } catch (AuthenticationException $e) {
-    fwrite(STDERR, "Invalid API key\n");
+    fwrite(STDERR, "Invalid API key: {$e->getMessage()}\n");
     exit(1);
 } catch (QuotaExceededException $e) {
     fwrite(STDERR, "Monthly quota exceeded\n");
@@ -44,9 +52,9 @@ try {
     fwrite(STDERR, "\n");
     exit(1);
 } catch (ServerException $e) {
-    fwrite(STDERR, "Server error ({$e->getStatusCode()})\n");
+    fwrite(STDERR, "Server error ({$e->getStatusCode()}): {$e->getMessage()}\n");
     exit(1);
-} catch (\Exception $e) {
+} catch (PlateAPIException $e) {
     fwrite(STDERR, "Error: {$e->getMessage()}\n");
     exit(1);
 }
