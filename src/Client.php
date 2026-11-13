@@ -6,12 +6,15 @@ namespace PlateAPI;
 
 class Client
 {
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.3.0';
     public const DEFAULT_BASE_URL = 'https://api.plateapi.com.au';
     public const DEFAULT_WALK_DELAY = 0.15;
 
     private const VALID_STATES = ['NSW', 'VIC', 'QLD', 'SA', 'WA', 'TAS', 'NT', 'ACT'];
     private const VALID_VEHICLE_TYPES = ['car', 'motorcycle'];
+    private const MAX_CHANGES_LIMIT = 100;
+    private const CHANGE_KEYS = ['vehicle_id', 'change', 'changed_at', 'new_years', 'merged_into',
+                                 'vehicle_type', 'make', 'model', 'year_range', 'detail'];
     private const INITIAL_BACKOFF = 1.0;
 
     private string $apiKey;
@@ -361,6 +364,155 @@ class Client
                 }
             }
         }
+    }
+
+    /**
+     * One page of GET /api/v1/vehicles/changes: vehicles added, updated or merged since `since`.
+     *
+     * Pass `since` for the first page, then `cursor` => $result['next_cursor'] while
+     * $result['has_more']. Store $result['until'] and pass it as `since` next time.
+     * allVehicleChanges() does the paging for you.
+     *
+     * @param array{since?: string|\DateTimeInterface, vehicle_type?: string, limit?: int, cursor?: string} $options
+     *        `since` is an ISO 8601 date or date-time string, or a DateTimeInterface (sent in UTC);
+     *        required unless `cursor` is given
+     * @return array{success: bool, since: ?string, until: ?string, type: ?string, count: int,
+     *               changes: array<int, array{vehicle_id: ?int, change: ?string, changed_at: ?string,
+     *               new_years: int[], merged_into: ?int, vehicle_type: ?string, make: ?string,
+     *               model: ?string, year_range: ?string, detail: ?string}>, has_more: bool,
+     *               next_cursor: ?string, duration_ms: ?float}
+     */
+    public function vehicleChanges(array $options): array
+    {
+        $since = $options['since'] ?? null;
+        $cursor = $options['cursor'] ?? null;
+        if ($since === '') {
+            $since = null;
+        }
+        if ($cursor === '') {
+            $cursor = null;
+        }
+        if ($since === null && $cursor === null) {
+            throw new \InvalidArgumentException('since is required unless cursor is given');
+        }
+        if ($since !== null && !is_string($since) && !$since instanceof \DateTimeInterface) {
+            throw new \InvalidArgumentException('since must be an ISO 8601 string or a DateTimeInterface');
+        }
+        if ($cursor !== null && !is_string($cursor)) {
+            throw new \InvalidArgumentException('cursor must be a string');
+        }
+        $vehicleType = $options['vehicle_type'] ?? null;
+        if ($vehicleType !== null && !in_array($vehicleType, self::VALID_VEHICLE_TYPES, true)) {
+            throw new \InvalidArgumentException(
+                "Invalid vehicle_type '{$vehicleType}'. Must be one of: " . implode(', ', self::VALID_VEHICLE_TYPES)
+            );
+        }
+        $limit = $options['limit'] ?? null;
+        if ($limit !== null && (!is_int($limit) || $limit < 1 || $limit > self::MAX_CHANGES_LIMIT)) {
+            throw new \InvalidArgumentException('limit must be an integer from 1 to ' . self::MAX_CHANGES_LIMIT);
+        }
+
+        $params = [];
+        if ($since !== null) {
+            $params['since'] = $this->sinceParam($since);
+        }
+        if ($vehicleType !== null) {
+            $params['type'] = $vehicleType;
+        }
+        if ($limit !== null) {
+            $params['limit'] = (string) $limit;
+        }
+        if ($cursor !== null) {
+            $params['cursor'] = $cursor;
+        }
+
+        $response = $this->request('/api/v1/vehicles/changes', $params, true);
+        return $this->normaliseChanges($response['body']);
+    }
+
+    /**
+     * Every change since `since`, following next_cursor until the last page.
+     *
+     * Returns one result with all the changes in order (has_more false, next_cursor null,
+     * duration_ms summed over the pages); store its `until` and pass it as `since` on the next sync.
+     *
+     * @param array{since: string|\DateTimeInterface, vehicle_type?: string, limit?: int} $options
+     *        `since` is required; a `cursor` key is ignored
+     * @return array same shape as vehicleChanges()
+     */
+    public function allVehicleChanges(array $options): array
+    {
+        $since = $options['since'] ?? null;
+        if ($since === null || $since === '') {
+            throw new \InvalidArgumentException('since is required');
+        }
+        $pageOptions = [
+            'vehicle_type' => $options['vehicle_type'] ?? null,
+            'limit' => $options['limit'] ?? null,
+        ];
+
+        $result = $this->vehicleChanges(['since' => $since] + $pageOptions);
+        $changes = $result['changes'];
+        $totalMs = $result['duration_ms'] ?? 0.0;
+        $sent = [];
+        while ($result['has_more']) {
+            $cursor = $result['next_cursor'];
+            if ($cursor === null || $cursor === '') {
+                throw new PlateAPIException('Changes feed said has_more but sent no next_cursor');
+            }
+            if (isset($sent[$cursor])) {
+                throw new PlateAPIException('Changes feed sent the same next_cursor twice');
+            }
+            $sent[$cursor] = true;
+            $result = $this->vehicleChanges(['cursor' => $cursor] + $pageOptions);
+            array_push($changes, ...$result['changes']);
+            $totalMs += $result['duration_ms'] ?? 0.0;
+        }
+
+        $result['changes'] = $changes;
+        $result['count'] = count($changes);
+        $result['has_more'] = false;
+        $result['next_cursor'] = null;
+        $result['duration_ms'] = $totalMs;
+        return $result;
+    }
+
+    private function sinceParam(string|\DateTimeInterface $since): string
+    {
+        if (is_string($since)) {
+            return $since;
+        }
+        // Always six fraction digits: the API reads 3 or 6, not 9.
+        return \DateTimeImmutable::createFromInterface($since)
+            ->setTimezone(new \DateTimeZone('UTC'))
+            ->format('Y-m-d\TH:i:s.u\Z');
+    }
+
+    private function normaliseChanges(array $body): array
+    {
+        $changes = [];
+        foreach (isset($body['changes']) && is_array($body['changes']) ? $body['changes'] : [] as $change) {
+            if (!is_array($change)) {
+                continue;
+            }
+            foreach (self::CHANGE_KEYS as $key) {
+                $change[$key] = $change[$key] ?? null;
+            }
+            $change['new_years'] = is_array($change['new_years']) ? array_values($change['new_years']) : [];
+            $changes[] = $change;
+        }
+
+        $body['success'] = ($body['success'] ?? false) === true;
+        foreach (['since', 'until', 'type'] as $key) {
+            $body[$key] = isset($body[$key]) && is_string($body[$key]) ? $body[$key] : null;
+        }
+        $body['count'] = isset($body['count']) && is_int($body['count']) ? $body['count'] : count($changes);
+        $body['changes'] = $changes;
+        $body['has_more'] = ($body['has_more'] ?? false) === true;
+        $body['next_cursor'] = isset($body['next_cursor']) && is_string($body['next_cursor']) ? $body['next_cursor'] : null;
+        $duration = $body['duration_ms'] ?? null;
+        $body['duration_ms'] = is_int($duration) || is_float($duration) ? (float) $duration : null;
+        return $body;
     }
 
     // ---- account ----

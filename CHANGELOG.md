@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 -- 2026-11-13
+
+Every 0.2.0 program keeps working. New methods only.
+
+### Added
+
+- `Client::vehicleChanges($options)` for `GET /api/v1/vehicles/changes`: one page of the vehicles
+  added, updated or merged since a date, with `since` (an ISO 8601 string, or a
+  `DateTimeInterface` sent in UTC), `vehicle_type`, `limit` and `cursor`. `new_years` is always a
+  list and every summary key is present (`null` when the API leaves it out).
+- `Client::allVehicleChanges($options)`: follows `next_cursor` to the last page and returns one
+  result with every change in order. It throws `PlateAPIException` instead of looping when the API
+  reports more pages without a cursor, or sends the same cursor twice.
+- README section "Keeping vehicle IDs current".
+
+### Changed
+
+- `User-Agent: plateapi-php/0.3.0` (`Client::VERSION`).
+
 ## 0.2.0 -- 2026-10-18
 
 Every 0.1.0 program keeps working. New keys and methods only; see "Upgrading from 0.1.0"

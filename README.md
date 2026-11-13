@@ -13,7 +13,7 @@ Add the GitHub repository to your `composer.json`:
         {"type": "vcs", "url": "https://github.com/PlateAPI/plateapi-php"}
     ],
     "require": {
-        "plateapi/plateapi-php": "^0.2"
+        "plateapi/plateapi-php": "^0.3"
     }
 }
 ```
@@ -184,7 +184,7 @@ Rules worth knowing:
   (database briefly unavailable) is retried by the SDK and then thrown as `ServerException`.
 - Trims are filed as separate models (`HILUX`, `HILUX SR`, `HILUX SR5 EXTRA CAB`), so to cover a
   base model walk every model name that starts with it. `walkVehicles()` below does this.
-- The vehicle level is a list: a few paths return two records whose catalogue entries overlap in
+- The vehicle level is a list: a few paths return two records whose year ranges overlap in
   that year. Use each record's description and `vehicleById()` to tell them apart.
 - `vehicle_id` identifies the variant, not the year: a variant returns the same ID under every
   model year it was sold.
@@ -325,6 +325,89 @@ then on each plate lookup query the table by `$result['vehicle']['vehicle_id']` 
 `$result['candidate_ids']` when `match` is `multiple`). Store IDs, not text. The full guide is at
 [plateapi.com.au/docs/vehicles](https://plateapi.com.au/docs/vehicles/#vehicles-skus).
 
+## Keeping vehicle IDs current
+
+If you store vehicle IDs (for example products mapped to vehicles) or full records, the changes
+feed lists the vehicles added, updated or merged since your last sync, so you do not have to walk
+the cascade again. Starter plans and above, like the rest of the vehicle database. Calls are never
+counted against your monthly lookup quota; they share the 500 requests per minute limit.
+
+```php
+use PlateAPI\Client;
+
+$client = new Client(getenv('PLATEAPI_KEY'));
+
+$since = load_checkpoint() ?? '2026-11-01';      // your code: the day you last walked the cascade
+$result = $client->allVehicleChanges(['since' => $since]);
+
+foreach ($result['changes'] as $c) {
+    if (!wanted($c['make'], $c['model'])) {       // your code: the models you map
+        continue;
+    }
+    if ($c['change'] === 'merged') {
+        repoint($c['vehicle_id'], $c['merged_into']);              // your code
+    } else {
+        save_vehicle($client->vehicleById($c['vehicle_id']));      // your code: insert or replace
+    }
+}
+
+save_checkpoint($result['until']);               // pass this as since next time
+```
+
+`allVehicleChanges()` reads every page and returns one result. `vehicleChanges()` returns a single
+page: pass `since` for the first, then `'cursor' => $page['next_cursor']` while
+`$page['has_more']` is true (the cursor carries the window, so `since` can be left out).
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `since` | required unless `cursor` is given | ISO 8601 date or date-time string (no offset means UTC), or a `DateTimeInterface` (sent in UTC). 2026-10-20 or later and within the last 90 days |
+| `vehicle_type` | `'car'` | `'motorcycle'` for the motorcycle feed; cars and motorcycles are separate feeds |
+| `limit` | `100` | changes per page, an integer from 1 to 100 |
+| `cursor` | none | `next_cursor` of the previous page (`vehicleChanges()` only; `allVehicleChanges()` ignores it) |
+
+Missing `since` and `cursor`, any other `vehicle_type`, or a `limit` that is not an integer from 1
+to 100 throws `InvalidArgumentException` before any request.
+
+Result keys: `success`, `since`, `until`, `type`, `count`, `changes`, `has_more`, `next_cursor`,
+`duration_ms`. From `allVehicleChanges()`, `changes` holds every page in order, `count` is their
+total, `has_more` is `false`, `next_cursor` is `null` and `duration_ms` is the sum of the pages.
+Each change:
+
+```php
+$c['vehicle_id']     // 1611220
+$c['change']         // "added", "updated" or "merged"
+$c['changed_at']     // "2026-11-18T03:12:44.120318Z"
+$c['new_years']      // [2027] (always a list; empty when no model years were added)
+$c['merged_into']    // the ID a merged vehicle now resolves to, else null
+$c['vehicle_type']   // "car" or "motorcycle"
+$c['make']           // "TOYOTA"
+$c['model']          // "HILUX SR"
+$c['year_range']     // "2020-ON" (can be null)
+$c['detail']         // "full" or "basic"
+```
+
+| `change` | Meaning | What to do |
+|----------|---------|------------|
+| `added` | a vehicle new to the database; `new_years` lists all of its years (empty for a `basic` record) | a new ID: fetch the record with `vehicleById()` if you need it |
+| `updated` | an existing vehicle gained model years (listed in `new_years`) or its record changed (`new_years` is empty) | re-fetch the record if you store records |
+| `merged` | `vehicle_id` was a duplicate of `merged_into`; the summary describes `merged_into` and the old ID still works with `vehicleById()` | re-point anything stored against `vehicle_id` to `merged_into` |
+
+Rules worth knowing:
+
+- Store `until` from each sync and pass it as `since` on the next one, rather than using your own
+  clock. It is a couple of minutes before the call, so chaining it never skips a change.
+- Changes go back 90 days at most, and not before 2026-10-20, so sync at least monthly (daily or
+  weekly is plenty). An older `since` throws `BadRequestException` with the API's message. If you
+  fall further behind, walk the cascade for the models you use, then sync from that day.
+- Changes come oldest first, and a vehicle can appear more than once: one first seen on a plate
+  lookup appears as `added` with `detail` `basic`, then as `updated` when its full record arrives.
+  Save by `vehicle_id` (insert or replace).
+- Vehicle IDs are never deleted, so there is no removed kind.
+- `make`, `model`, `year_range` and `detail` mean the same as in the full record, so skip the
+  models you do not map before fetching anything: a new model year can touch thousands of vehicles.
+- Free and Lite keys get `PermissionDeniedException`. `allVehicleChanges()` throws
+  `PlateAPIException` rather than looping if the API reports more pages without a new cursor.
+
 ## Account
 
 ### Usage
@@ -386,7 +469,7 @@ machine code when it sent one) and `getRequestId()`. Messages are the API's own.
 
 | Exception | HTTP | When |
 |-----------|------|------|
-| `BadRequestException` | 400 | invalid plate, state, cascade parameter or vehicle ID |
+| `BadRequestException` | 400 | invalid plate, state, cascade parameter, vehicle ID or changes feed parameter |
 | `AuthenticationException` | 401 | missing, invalid or deactivated key; email not verified |
 | `PermissionDeniedException` | 403 | IP not on the key's allowlist, account banned, or vehicle database on a Free / Lite plan |
 | `NotFoundException` | 404 | `vehicleById()` with an unknown ID |
@@ -469,7 +552,7 @@ From your WordPress root directory (where `wp-config.php` lives), create or edit
         {"type": "vcs", "url": "https://github.com/PlateAPI/plateapi-php"}
     ],
     "require": {
-        "plateapi/plateapi-php": "^0.2"
+        "plateapi/plateapi-php": "^0.3"
     }
 }
 ```

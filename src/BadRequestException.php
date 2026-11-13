@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PlateAPI;
 
-/** HTTP 400: invalid plate, state, cascade value or vehicle ID. */
+/** HTTP 400: invalid plate, state, cascade value, vehicle ID or changes feed parameter. */
 class BadRequestException extends PlateAPIException
 {
     public function __construct(string $message = 'Bad request', ?string $apiCode = null, ?string $requestId = null)
